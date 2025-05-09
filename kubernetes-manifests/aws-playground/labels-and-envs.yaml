@@ -1,0 +1,10 @@
+- op: add
+  path: "/spec/template/metadata/labels/dynatrace-release-stage"
+  value: production
+- op: add
+  path: "/spec/template/spec/containers/0/env/-"
+  value:
+    name: DT_RELEASE_STAGE
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.labels['dynatrace-release-stage']

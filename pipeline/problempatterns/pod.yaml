@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: jnlp
+      image: registry.lab.dynatrace.org/jci/ubuntu18-amd64-docker:27
+      imagePullPolicy: Always
+      args:
+        - "jenkins-slave"
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          cpu: "256m"
+          memory: "1Gi"
+        limits:
+          cpu: "512m"
+          memory: "1Gi"

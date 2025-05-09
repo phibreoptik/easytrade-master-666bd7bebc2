@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: headlessloadgen
+  name: headlessloadgen
+spec:
+  selector:
+    matchLabels:
+      app: headlessloadgen
+  template:
+    metadata:
+      labels:
+        app: headlessloadgen
+    spec:
+      containers:
+        - name: headlessloadgen
+          image: gcr.io/dynatrace-demoability/headlessloadgen:b554e03
+          imagePullPolicy: Always
+          env:
+            - name: EASY_TRADE_DOMAIN
+              value: "frontendreverseproxy-easytrade"
+            - name: EASY_TRADE_PORT
+              value: "80"
+            - name: NODE_LOG_LEVEL
+              value: "info"
+            - name: RARE_VISITS_INTERVAL_S
+              value: "3600" # run the rare visits once per hour
+          resources:
+            requests:
+              memory: "500Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"

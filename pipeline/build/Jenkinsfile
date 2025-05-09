@@ -1,0 +1,302 @@
+#!groovy
+
+pipeline {
+
+	agent {
+		kubernetes {
+			idleMinutes '0'
+			yamlFile 'pipeline/build/pod.yaml'
+		}
+	}
+
+	options {
+		buildDiscarder(logRotator(numToKeepStr: '20'))
+		disableConcurrentBuilds()
+		timeout(time: 45, unit: 'MINUTES')
+		timestamps()
+	} 
+
+	environment {
+		GCR_URL = 'gcr.io'
+		SKAFFOLD_DEFAULT_REPO = "${GCR_URL}/dynatrace-demoability/easytrade"
+		K8S_CLUSTER = 'eks-demo2'
+		K8S_NAMESPACE = 'easytrade'
+		TESTS_CREDENTIALS_ID = 'bitbucket-buildmaster'
+		TESTS_REPOSITORY = 'https://bitbucket.lab.dynatrace.org/scm/dem/easytravel-api-introspection-test.git'
+	}
+
+	stages {
+		stage('Setup') {
+			steps {
+				script {
+					env.KUBECONFIG = "${env.WORKSPACE}/.kube/config"
+					withVault(vaultSecrets: [
+						[path: 'jarvis-jenkins-demoability/GCR-demoability-automations-account',
+							secretValues: [
+								[envVar: 'GCR_CREDENTIALS', vaultKey: 'credentials']
+							]
+						],
+						[path: 'jarvis-jenkins-demoability/easytravel-dockerhub-account',
+							secretValues: [
+								[envVar: 'DOCKERHUB_CREDENTIALS_USR', vaultKey: 'username'], 
+								[envVar: 'DOCKERHUB_CREDENTIALS_PSW', vaultKey: 'token']
+							]
+						],
+						[path: 'jarvis-jenkins-demoability/demoability-kubeconfigs',
+							secretValues: [
+								[envVar: 'KUBECONFIGDATA', vaultKey: "${env.K8S_CLUSTER}"]
+							]
+						]
+					]) {
+						sh '''
+							set +x
+							mkdir .kube
+							echo ${KUBECONFIGDATA} > .kube/config
+							echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_CREDENTIALS_USR} --password-stdin
+							echo ${GCR_CREDENTIALS} | docker login -u _json_key --password-stdin ${GCR_URL}
+						'''
+					}
+				}
+			}
+		}
+
+		stage('Build images') {
+			steps {
+				script {
+					env.TAG = sh(returnStdout: true, script: 'git log --pretty=format:"%h" -n 1').trim()
+					sh "./scripts/set_version.sh ${getBuildVersion()} src"
+
+					if ("${env.BRANCH_NAME}" == 'master') {
+						sh '''
+							skaffold build --push=true
+							skaffold build --push=true -t latest
+						'''
+					} else {
+						sh 'skaffold build'
+					}
+				}
+			}
+		}
+
+		stage('Deploy test environment to k8s cluster') {
+			steps {
+				script {
+					if ("${env.BRANCH_NAME}" == 'master') {
+						sh '''
+							skaffold deploy -p aws-staging -n ${K8S_NAMESPACE} -t ${TAG}
+							kubectl -n ${K8S_NAMESPACE} set env deployment/credit-card-order-service WORK_DELAY=10 WORK_RATE=10
+							kubectl -n ${K8S_NAMESPACE} set env deployment/third-party-service COURIER_DELAY=10 COURIER_RATE=10 MANUFACTURE_DELAY=10 MANUFACTURE_RATE=10
+						'''
+					}
+				}
+			}
+		}
+
+		stage('Prepare for tests') {
+			steps {
+				script {
+					if ("${env.BRANCH_NAME}" == 'master') {
+						sleep(time:3, unit:'MINUTES')
+						orderCreditCard()
+						sleep(time:12,unit:'MINUTES')
+					}
+				}
+			}
+		}
+
+		stage('Run tests') {
+			steps {
+				script {
+					if ("${env.BRANCH_NAME}" == 'master') {
+						dir('tests') {
+							catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+								git credentialsId: "${TESTS_CREDENTIALS_ID}", url: "${TESTS_REPOSITORY}"
+								gradlew('cleanTest easytradePipelineTest -PdynatraceInstance="demo.staging" -Pslack=false --info')
+								
+								if(!checkCreditCardOrder()){
+									error("Credit card order test failed")
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		stage('Validate') {
+			steps {
+				script {
+					if ("${env.BRANCH_NAME}" == 'master') {	
+						catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+							String accessToken = getAccessToken()
+							if(accessToken == null){
+								error("Failed to fetch access token")
+							}
+							String jobId = sh(returnStdout: true, script: 'git log --pretty=format:"%h" -n 1').trim() + "_" + new Date().getTime()
+							sendTriggerEvent(accessToken, jobId)
+							boolean result = getResult(accessToken, jobId, 3, 30)
+							if(!result){
+								error("Failed to validate deployment")
+							}
+						}
+                	}
+                }
+			}
+		}
+
+		stage('Disable test environment') {
+			steps {
+				script {
+					if ("${env.BRANCH_NAME}" == 'master') {
+						sh 'kubectl -n ${K8S_NAMESPACE} rollout undo deployment/credit-card-order-service deployment/third-party-service'
+					}
+				}
+			}
+		}
+	}
+
+	post {
+		failure {
+			emailext to: 'team-rp@dynatrace.com',
+                subject: "EasyTrade pipeline failed: ${currentBuild.fullDisplayName}",
+                body: "Test failure report url: ${env.BUILD_URL}"
+        }
+
+		cleanup {
+			sh '''
+			docker logout
+			docker logout ${GCR_URL}
+			'''
+			cleanWs()
+		}
+	}
+}
+
+void orderCreditCard(){
+	final String body = writeJSON(json: [
+			"accountId": 3,
+			"email": "demo.user@dynatrace.com",
+			"name": "Demo User",
+			"shippingAddress": "ulica Andersa 352 91-682 Ilaw",
+			"cardLevel": "Platinum"
+		],
+		returnText: true,
+		pretty: 2
+	)
+
+	print("Ordering credit card with body: [${body}]")
+	withEnv(["BODY=${body}"]) {
+		final String response = sh(script: '''
+		curl -X 'POST' \
+			'https://easytrade.staging.demoability.dynatracelabs.com/credit-card-order-service/v1/orders' \
+			-H 'accept: application/json' \
+			-H 'Content-Type: application/json' \
+			-d "${BODY}"
+		''', returnStdout: true).trim()
+		print("Card ordered, response: [${response}]")
+	}
+}
+
+boolean checkCreditCardOrder(){
+	print("Checking latest credit card order status")
+	final String response = sh(script: '''
+	curl -X 'GET' \
+		'https://easytrade.staging.demoability.dynatracelabs.com/credit-card-order-service/v1/orders/3/status/latest' \
+		-H 'accept: application/json'
+	''', returnStdout: true).trim()
+	print("Response: [${response}]")
+
+	def json = readJSON(text: response)
+	String status = json.results.status 
+	print("Latest card status: [${status}]")
+	return status == "card_delivered"
+}
+
+String getAccessToken(){
+	withVault(vaultSecrets: [
+		[path: 'jarvis-jenkins-demoability/oqr-bizevent-oauth',
+			secretValues: [
+				[envVar: 'PLATFORM_CLIENT', vaultKey: 'client_id'], 
+				[envVar: 'PLATFORM_CLIENT_SECRET', vaultKey: 'client_secret']
+			]
+	]]) {
+		print("Getting OAuth2 token")
+		final String tokenResponse = sh(script: '''
+			set +x
+			curl -sLX POST "https://sso-sprint.dynatracelabs.com/sso/oauth2/token" \\
+				--header "Content-Type: application/x-www-form-urlencoded" \\
+				--data-urlencode "grant_type=client_credentials" \\
+				--data-urlencode "client_id=${PLATFORM_CLIENT}" \\
+				--data-urlencode "client_secret=${PLATFORM_CLIENT_SECRET}" \\
+				--data-urlencode "scope=storage:buckets:read storage:bizevents:read storage:events:write"
+			set -x
+		''', returnStdout: true).trim()
+		return readJSON(text: tokenResponse).access_token
+	}
+}
+
+String sendTriggerEvent(String accessToken, String jobId){
+	final String body = writeJSON(json: [
+		"timeframe.from": "now-15m",
+		"timeframe.to": "now",
+		"srg.variable.timeframe": 15,
+		"event.provider": "Jenkins",
+		"event.type": "demoability.validation.trigger",
+		"tags.application": "easytrade-k8s",
+		"tags.job.id": jobId
+	], returnText: true, pretty: 2)
+	print("Triggering workflow with")
+	print(body)
+
+	withEnv(["TOKEN=${accessToken}", "JOB_ID=${jobId}", "BODY=${body}"]){
+		final String response = sh(script: '''
+			set +x
+			curl -siLX POST "https://oqr47576.sprint.apps.dynatracelabs.com/platform/classic/environment-api/v2/bizevents/ingest" \\
+				--header "Content-Type: application/json" \\
+				--header "Authorization: Bearer ${TOKEN}" \\
+				--data-raw "${BODY}"
+			set -x
+		''', returnStdout: true).trim()
+		print("Bizevent response [${response}]")
+	}
+}
+
+boolean getResult(String accessToken, String jobId, int retries, int intervalS){
+	final String body =	writeJSON(json: [
+			"query": "fetch bizevents, from: now() - 5m | filter event.type == \"demoability.validation.result\" and tags.job.id == \"${jobId}\"",
+			"requestTimeoutMilliseconds": "1000"
+		],
+		returnText: true,
+		pretty: 2
+	)
+	print("Using query")
+	print(body)
+	withEnv(["TOKEN=${accessToken}", "JOB_ID=${jobId}", "BODY=${body}"]){
+		for(int attempt = 0; attempt < retries ; attempt++) {
+			print("Waiting [${intervalS}s] for results of job [JOB_ID::${jobId}] try [${attempt + 1}/${retries}]")
+			sleep(time:intervalS, unit:'SECONDS')
+			String response = sh(script: '''
+				set +x
+				curl -sLX POST "https://oqr47576.sprint.apps.dynatracelabs.com/platform/storage/query/v1/query:execute?enrich=metric-metadata" \\
+					--header "Content-Type: application/json" \\
+					--header "Accept: application/json" \\
+					--header "Authorization: Bearer ${TOKEN}" \\
+					--data-raw "${BODY}"
+				set -x
+			''', returnStdout: true).trim()
+			def jsonResponse = readJSON(text: response)
+			int record_size = jsonResponse.result.records.size()
+			if (record_size > 0){
+				String result = jsonResponse.result.records[0].result
+				print("Found result [${result}] for job [JOB_ID::${jobId}]")
+				return result == "pass"
+			}
+		}
+		print("No results found for job [JOB_ID::${jobId}]")
+		return false
+	}
+}
+
+String getBuildVersion() {
+	return "1.1.${env.BUILD_ID}"
+}

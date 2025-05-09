@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontendreverseproxy-easytrade
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-east-1:246186168471:certificate/c81682aa-8919-4d52-a076-f49f5f5350e2
+    service.beta.kubernetes.io/load-balancer-source-ranges: 157.25.19.100/32,83.164.153.226/32,83.164.160.102/32,213.27.198.18/32,118.201.93.225/32
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontendreverseproxy
+  ports:
+    - name: https
+      port: 443
+      targetPort: 80

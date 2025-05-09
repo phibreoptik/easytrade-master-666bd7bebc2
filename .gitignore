@@ -1,0 +1,8 @@
+*.bak
+src/contentcreator/.gradle
+src/contentcreator/bin
+.vscode
+node_modules
+**/*.log
+__debug_bin
+.idea

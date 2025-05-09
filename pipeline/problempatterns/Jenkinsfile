@@ -1,0 +1,385 @@
+#!groovy
+
+environments = [
+	staging: [
+		address: 'easytrade.staging.demoability.dynatracelabs.com',
+		name: 'staging',
+		oauthSecret: 'jarvis-jenkins-demoability/oqr-bizevent-oauth',
+		releaseStage: 'staging',
+	],
+	discover: [
+		address: 'easytrade.playground.demoability.dynatracelabs.com',
+		name: 'discover',
+		oauthSecret: 'jarvis-jenkins-demoability/wkf-bizevent-oauth',
+		releaseStage: 'production',
+	],
+	live: [
+		address: 'easytrade.live.demoability.dynatracelabs.com',
+		name: 'live',
+		oauthSecret: 'jarvis-jenkins-demoability/guu-bizevent-oauth',
+		releaseStage: 'production',
+	]
+]
+
+problemPatterns = [
+	[
+		name: 'factory_crisis',
+		schedule: [
+			[
+				environment: environments.staging.name,
+				cronExpr: '00 16 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.staging.name,
+				cronExpr: '00 19 * * *',
+				state: 'disabled'
+			],
+			[
+				environment: environments.discover.name,
+				cronExpr: '00 16 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.discover.name,
+				cronExpr: '00 19 * * *',
+				state: 'disabled'
+			],
+			[
+				environment: environments.live.name,
+				cronExpr: '00 16 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.live.name,
+				cronExpr: '00 19 * * *',
+				state: 'disabled'
+			],
+		],
+		sendDeployemntEvent: false,
+	],
+	[
+		name: 'ergo_aggregator_slowdown',
+		schedule: [
+			[
+				environment: environments.staging.name,
+				cronExpr: '00 22 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.staging.name,
+				cronExpr: '25 22 * * *',
+				state: 'disabled'
+			],
+			[
+				environment: environments.discover.name,
+				cronExpr: '00 22 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.discover.name,
+				cronExpr: '25 22 * * *',
+				state: 'disabled'
+			],
+			[
+				environment: environments.live.name,
+				cronExpr: '00 22 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.live.name,
+				cronExpr: '25 22 * * *',
+				state: 'disabled'
+			],
+		],
+		sendDeploymentEvent: true,
+		deploymentConfig: [
+			selectors: [
+				'type(PROCESS_GROUP_INSTANCE),mzName(EasyTrade),entityName(offerservice)',
+			],
+		],
+	],
+	[
+		name: 'db_not_responding',
+		schedule: [
+			[
+				environment: environments.staging.name,
+				cronExpr: '00 20 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.staging.name,
+				cronExpr: '25 20 * * *',
+				state: 'disabled'
+			],
+			[
+				environment: environments.discover.name,
+				cronExpr: '00 20 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.discover.name,
+				cronExpr: '25 20 * * *',
+				state: 'disabled'
+			],
+			[
+				environment: environments.live.name,
+				cronExpr: '00 20 * * *',
+				state: 'enabled'
+			],
+			[
+				environment: environments.live.name,
+				cronExpr: '25 20 * * *',
+				state: 'disabled'
+			],
+		],
+		sendDeploymentEvent: true,
+		deploymentConfig: [
+			selectors: [
+				'type(PROCESS_GROUP_INSTANCE),mzName(EasyTrade),entityName(broker-service)',
+				'type(PROCESS_GROUP_INSTANCE),mzName(EasyTrade),entityName(MSSQL db)',
+			],
+		],
+	],
+]
+
+problemPatternNames = problemPatterns.collect{it.name}
+environmentNames = environments.collect{it.value.name}
+
+pipeline {
+
+	agent {
+		kubernetes {
+			yamlFile 'pipeline/problempatterns/pod.yaml'
+		}
+	}
+	options {
+		buildDiscarder(logRotator(numToKeepStr: '120'))
+		timeout(time: 45, unit: 'MINUTES')
+		timestamps()
+	}
+
+	parameters {
+		choice(name: 'PLUGIN', choices: problemPatternNames, description: '')
+		choice(name: 'EASYTRADE_ENVIRONMENT', choices: environmentNames, description: '')
+		choice(name: "STATE", choices: ['enabled', 'disabled'], description: '')
+	}
+
+	triggers {
+		parameterizedCron(env.BRANCH_NAME == 'master' ? "${getCron()}" : '')
+	}
+
+	stages {
+
+		stage('Setup') {
+			steps {
+				script {
+					exportEnvs(EASYTRADE_ENVIRONMENT, PLUGIN, STATE)
+					currentBuild.displayName = "#${BUILD_NUMBER} ${EASYTRADE_ENVIRONMENT} | ${PLUGIN} | ${STATE}"
+					echo getDisplayInfo()
+				}
+			}
+		}
+
+
+		stage('Enable/disable problem') {
+			steps {
+				script{
+					echo "Enabling problem pattern [${FEATURE_ID}] on [${EASYTRADE_ENVIRONMENT}:${EASYTRADE_ADDRESS}]"
+					toggleProblemPattern(EASYTRADE_ADDRESS, FEATURE_ID, ENABLED)
+				}
+			}
+		}
+
+
+		// these tests are broken
+		// fix them first before re-enabling this stage
+		//
+		// stage('Test if problem enabled/disabled') {
+		// 	when{
+		// 		expression {
+		// 			return params.PLUGIN == "ergo_aggregator_slowdown"
+		// 		}
+		// 	}
+		// 	steps {
+		// 		sleep(time:30, unit:'SECONDS')
+		// 		dir('integrationTests') {
+		// 			catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+		// 				gradlew('cleanTest pluginTest -PeasyTradeUrl=${EASYTRADE_ADDRESS} -PpluginName=${PLUGIN} -PpluginEnabled=${ENABLED} --info')
+		// 			}
+		// 		}
+		// 	}
+		// }
+
+		stage('Deployment event') {
+			steps {
+				script {
+					def problemPattern = getByName(problemPatterns, FEATURE_ID)
+					if(problemPattern.sendDeploymentEvent){
+						def environment = environments[EASYTRADE_ENVIRONMENT]
+						def selectors = problemPattern.deploymentConfig.selectors
+						withAccessToken(environment.oauthSecret, { accessToken ->
+							sendBizevent(getBizeventBodyString(selectors, environment.releaseStage, "release"), accessToken)
+						})
+					}
+                }
+			}
+		}
+
+		stage('Wait for data'){
+			// adding 15m delay in workflows feels pretty hacky (possibly costly)
+			// so adding it in Jenkins instead
+			// there's an issue for it (https://dev-jira.dynatrace.org/browse/PS-7906)
+			// once it's resolved it should be possible to move this wait into workflows
+			steps{
+				sleep(time: 15, unit: 'MINUTES')
+			}
+		}
+
+		stage('Validate') {
+			steps {
+				script {
+					def problemPattern = getByName(problemPatterns, FEATURE_ID)
+					if(problemPattern.sendDeploymentEvent){
+						def environment = environments[EASYTRADE_ENVIRONMENT]
+						def selectors = problemPattern.deploymentConfig.selectors
+						withAccessToken(environment.oauthSecret, { accessToken ->
+							sendBizevent(getBizeventBodyString(selectors, environment.releaseStage, "validation"), accessToken)
+						})
+					}
+                }
+			}
+		}
+	}
+}
+
+String getCronEntry(String cronExpression, String envName, String problemPatternName, String problemPatternState){
+	return "${cronExpression} % EASYTRADE_ENVIRONMENT=${envName}; PLUGIN=${problemPatternName}; STATE=${problemPatternState}"
+}
+
+String getCron(){
+	return problemPatterns
+		.collect{pp -> pp.schedule.collect{
+			getCronEntry(
+				it.cronExpr,
+				it.environment, 
+				pp.name,
+				it.state
+			)
+		}}
+		.flatten()
+		.sort()
+		.join('\n')
+}
+
+def getByName(mapping, String name){
+	return mapping.find{it.name == name}
+}
+
+void exportEnvs(String envName, String ppName, String ppState) {
+	def problemPattern = getByName(problemPatterns, ppName)
+
+	env.FEATURE_ID = problemPattern.name
+	env.ENABLED = ppState == "enabled"
+	env.EASYTRADE_ADDRESS = environments[envName].address
+	env.EASYTRADE_VERSION = "1.1.1"
+	env.EASYTRADE_BUILD_VERSION = getBuildVersion(EASYTRADE_VERSION)
+}
+
+String getDisplayInfo(){
+	return [
+		"ENVIRONMENT_NAME        = ${params.EASYTRADE_ENVIRONMENT}",
+		"EASYTRADE_ADDRESS       = ${EASYTRADE_ADDRESS}",
+		"PROBLEM_PATTERN         = ${FEATURE_ID}",
+		"STATE                   = ${params.STATE}",
+		"EASYTRADE_VERSION       = ${EASYTRADE_VERSION}",
+		"EASYTRADE_BUILD_VERSION = ${EASYTRADE_BUILD_VERSION}"
+	].join('\n')
+}
+
+void toggleProblemPattern(String ipAddress, String featureId, String enabled){
+	sh """
+	curl -s --show-error --fail -X PUT \
+    https://${ipAddress}/feature-flag-service/v1/flags/${featureId} \
+    -H 'accept: application/json' \
+    -H 'Content-Type: application/json' \
+    -d '{\"enabled\": ${enabled}}'
+	"""
+}
+
+void sendBizevent(String eventBody, String ssoToken){
+	echo "Sending bizevent [${eventBody}]"
+	def command = [
+		'curl -s --fail -X POST "${TENANT_URL}/api/v2/bizevents/ingest"',
+		"-H 'accept: application/json; charset=utf-8'",
+		"-H 'Authorization: Bearer ${ssoToken}'",
+		"-H 'Content-Type: application/json; charset=utf-8'",
+		"-d '${eventBody}'",
+	].join(' ')
+	sh(script: """
+		set +x
+		${command}
+		set -x
+	""")
+}
+
+void withOauthVault(String secretName, Closure function){
+	withVault(vaultSecrets: [[path: secretName, secretValues: [
+		[envVar: 'TENANT_URL', vaultKey: 'tenant_url'],
+		[envVar: 'SSO_URL', vaultKey: 'sso_url'],
+		[envVar: 'CLIENT_ID', vaultKey: 'client_id'],
+		[envVar: 'CLIENT_SECRET', vaultKey: 'client_secret'],
+	]]]){
+		function()
+	}
+}
+
+void withAccessToken(String secretName, Closure function){
+	withOauthVault(secretName, {
+		String accessToken = getAccessToken()
+		if(accessToken == null){
+			error("Failed to fetch access token")
+		}
+		function(accessToken)
+	})
+}
+
+String getAccessToken(){
+	echo "Getting OAuth2 token for [${EASYTRADE_ENVIRONMENT}]"
+	final String tokenResponse = sh(script: '''
+		set +x
+		curl -sLX POST "${SSO_URL}" \\
+			--header "Content-Type: application/x-www-form-urlencoded" \\
+			--data-urlencode "grant_type=client_credentials" \\
+			--data-urlencode "client_id=${CLIENT_ID}" \\
+			--data-urlencode "client_secret=${CLIENT_SECRET}" \\
+			--data-urlencode "scope=storage:buckets:read storage:bizevents:read storage:events:write"
+		set -x
+	''', returnStdout: true).trim()
+	return readJSON(text: tokenResponse).access_token
+}
+
+String getBuildVersion(String easytradeVersion) {
+	String dateString = new Date().format("yyyyMMdd-HHmmss")
+	return "${easytradeVersion}.${dateString}"
+}
+
+String getBizeventBodyString(List<String> entitySelectors, String releaseStage, String type){
+	return writeJSON(returnText: true, json: [
+		"event.type": "DEPLOYMENT",
+		"event.provider": "jenkins",
+		"tags.application": "easytrade-k8s",
+		"tags.type": type,
+		"release.entitySelectors": entitySelectors,
+		"release.title": "EasyTrade version change",
+		"release.properties": [
+			"dt.event.deployment.name": "EasyTrade",
+			"dt.event.deployment.version": EASYTRADE_VERSION,
+			"dt.event.deployment.release_build_version": EASYTRADE_BUILD_VERSION,
+			"dt.event.deployment.release_stage": releaseStage,
+			"dt.event.deployment.release_product": "easytrade",
+		],
+		"validation.jobId": EASYTRADE_BUILD_VERSION,
+		"validation.timeframe": 15,
+	])
+}
