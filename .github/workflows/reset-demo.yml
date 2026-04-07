@@ -1,0 +1,59 @@
+name: Reset Demo - Restore Problem Pattern
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reset-code:
+    name: Reset Code to Buggy Baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore original credit-card-order-service code
+        run: |
+          # Restore the credit-card-order-service source from the original baseline commit
+          git checkout 8e75d13 -- src/credit-card-order-service/
+
+      - name: Commit and push reset
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Check if there are actual changes to commit
+          if git diff --cached --quiet && git diff --quiet; then
+            echo "Code is already at baseline - no reset needed"
+          else
+            git add src/credit-card-order-service/
+            git commit -m "Reset credit-card-order-service to original state [skip ci]"
+            git push
+          fi
+
+  reset-vm:
+    name: Rebuild Container & Enable Problem Pattern
+    runs-on: ubuntu-latest
+    needs: reset-code
+    steps:
+      - name: Reset VM environment
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            cd ${{ secrets.EASYTRADE_PATH }}
+            echo "--- Pulling latest code ---"
+            git pull origin main
+            echo "--- Rebuilding credit-card-order-service ---"
+            docker compose up -d --build --force-recreate --no-deps credit-card-order-service
+            echo "--- Waiting for service to start ---"
+            sleep 20
+            echo "--- Enabling credit_card_meltdown problem pattern ---"
+            curl -sf -X PUT \
+              http://localhost/feature-flag-service/v1/flags/credit_card_meltdown \
+              -H 'Content-Type: application/json' \
+              -d '{"enabled": true}'
+            echo ""
+            echo "--- Demo reset complete ---"
+            echo "--- credit-card-order-service is now BUGGY and the problem pattern is ACTIVE ---"
