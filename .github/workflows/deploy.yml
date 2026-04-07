@@ -1,4 +1,4 @@
-# CI/CD pipeline for EasyTrade credit-card-order-service
+# CI/CD pipeline for EasyTrade credit-card-order-service deployments
 name: EasyTrade CI/CD Pipeline
 
 on:
