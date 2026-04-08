@@ -3,6 +3,9 @@ name: Reset Demo - Restore Problem Pattern
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   reset-code:
     name: Reset Code to Buggy Baseline
