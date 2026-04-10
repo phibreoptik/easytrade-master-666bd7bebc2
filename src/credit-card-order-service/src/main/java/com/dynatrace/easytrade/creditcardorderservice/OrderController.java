@@ -299,8 +299,8 @@ public class OrderController {
 
     private int CountArythmeticSequenceTotal(int firstElement, int step, int count)
     {
-        // this has a wrong value (normally would be 2), because we want to create an exception!
-        int theGreatDivider = 0;
+        // Fix: prevent ArithmeticException when divisor is zero
+        int theGreatDivider = 2;
 
         int lastElement = firstElement + (step * (count - 1));
         int total = (firstElement + lastElement) * count / theGreatDivider;
